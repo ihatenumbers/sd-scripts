@@ -774,54 +774,38 @@ class BaseDataset(torch.utils.data.Dataset):
                 caption = caption.split("\n")[0]
 
             if subset.shuffle_caption or subset.token_warmup_step > 0 or subset.caption_tag_dropout_rate > 0:
-                fixed_tokens = []
-                flex_tokens = []
-                fixed_suffix_tokens = []
                 if (
                     hasattr(subset, "keep_tokens_separator")
                     and subset.keep_tokens_separator
                     and subset.keep_tokens_separator in caption
                 ):
-                    fixed_part, flex_part = caption.split(subset.keep_tokens_separator, 1)
-                    if subset.keep_tokens_separator in flex_part:
-                        flex_part, fixed_suffix_part = flex_part.split(subset.keep_tokens_separator, 1)
-                        fixed_suffix_tokens = [t.strip() for t in fixed_suffix_part.split(subset.caption_separator) if t.strip()]
+                    # Split the caption into parts based on the separator
+                    parts = caption.split(subset.keep_tokens_separator)
+                    final_tokens = []
 
-                    fixed_tokens = [t.strip() for t in fixed_part.split(subset.caption_separator) if t.strip()]
-                    flex_tokens = [t.strip() for t in flex_part.split(subset.caption_separator) if t.strip()]
-                else:
-                    tokens = [t.strip() for t in caption.strip().split(subset.caption_separator)]
-                    flex_tokens = tokens[:]
-                    if subset.keep_tokens > 0:
-                        fixed_tokens = flex_tokens[: subset.keep_tokens]
-                        flex_tokens = tokens[subset.keep_tokens :]
+                    for i, part in enumerate(parts):
+                        # Tokenize the current part
+                        tokens = [t.strip() for t in part.split(subset.caption_separator) if t.strip()]
+                        
+                        # Even parts (0, 2, 4...) are fixed
+                        if i % 2 == 0:
+                            final_tokens.extend(tokens)
+                        # Odd parts (1, 3, 5...) are flexible (shuffle and dropout)
+                        else:
+                            if subset.shuffle_caption:
+                                random.shuffle(tokens)
 
-                if subset.token_warmup_step < 1:  # 初回に上書きする
-                    subset.token_warmup_step = math.floor(subset.token_warmup_step * self.max_train_steps)
-                if subset.token_warmup_step and self.current_step < subset.token_warmup_step:
-                    tokens_len = (
-                        math.floor(
-                            (self.current_step) * ((len(flex_tokens) - subset.token_warmup_min) / (subset.token_warmup_step))
-                        )
-                        + subset.token_warmup_min
-                    )
-                    flex_tokens = flex_tokens[:tokens_len]
-
-                def dropout_tags(tokens):
-                    if subset.caption_tag_dropout_rate <= 0:
-                        return tokens
-                    l = []
-                    for token in tokens:
-                        if random.random() >= subset.caption_tag_dropout_rate:
-                            l.append(token)
-                    return l
-
-                if subset.shuffle_caption:
-                    random.shuffle(flex_tokens)
-
-                flex_tokens = dropout_tags(flex_tokens)
-
-                caption = ", ".join(fixed_tokens + flex_tokens + fixed_suffix_tokens)
+                            # Apply token dropout
+                            if subset.token_dropout_rate > 0.0:
+                                # Determine the number of tokens to drop
+                                num_to_drop = int(len(tokens) * subset.token_dropout_rate)
+                                # Drop tokens from the end after shuffling
+                                tokens_to_keep = tokens[:-num_to_drop] if num_to_drop > 0 else tokens
+                                final_tokens.extend(tokens_to_keep)
+                            else:
+                                final_tokens.extend(tokens)
+                    
+                    caption = ", ".join(final_tokens)
 
             # process secondary separator
             if subset.secondary_separator:
